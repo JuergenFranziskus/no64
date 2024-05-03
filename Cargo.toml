@@ -1,6 +1,12 @@
+[workspace]
+members = ["cpu_mips3", "util"]
+
+
 [package]
 name = "no64"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+util = { path = "./util" }
+cpu_mips3 = { path = "./cpu_mips3" }

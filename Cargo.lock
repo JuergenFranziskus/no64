@@ -3,5 +3,20 @@
 version = 3
 
 [[package]]
+name = "cpu_mips3"
+version = "0.1.0"
+dependencies = [
+ "util",
+]
+
+[[package]]
 name = "no64"
+version = "0.1.0"
+dependencies = [
+ "cpu_mips3",
+ "util",
+]
+
+[[package]]
+name = "util"
 version = "0.1.0"
