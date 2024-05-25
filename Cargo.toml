@@ -10,3 +10,5 @@ edition = "2021"
 [dependencies]
 util = { path = "./util" }
 cpu_mips3 = { path = "./cpu_mips3" }
+crossterm = "0.27.0"
+anyhow = "1.0.86"

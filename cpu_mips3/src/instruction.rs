@@ -31,19 +31,46 @@ impl Instr {
         self.0 & 0x3FFFFFF
     }
 
+    pub const SPECIAL: u8 = 0o00;
+    pub const BNE: u8 = 0o05;
     pub const ADDIU: u8 = 0o11;
     pub const ANDI: u8 = 0o14;
     pub const ORI: u8 = 0o15;
     pub const LUI: u8 = 0o17;
     pub const COP0: u8 = 0o20;
     pub const BEQL: u8 = 0o24;
+    pub const BNEL: u8 = 0o25;
     pub const LW: u8 = 0o43;
+    pub const SW: u8 = 0o53;
+
+    pub const SPECIAL_SRL: u8 = 0o02;
+    pub const SPECIAL_JR: u8 = 0o10;
 
     pub const COPZ_MT: u8 = 0o04;
+}
+impl Instr {
+    pub fn is_load_store(self) -> bool {
+        matches!(self.opcode(), Self::LW | Self::SW)
+    }
+    fn print_special(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.funct() {
+            Self::SPECIAL_SRL => write!(f, "SRL r{}, r{}, {}", self.rd(), self.rt(), self.sa()),
+            Self::SPECIAL_JR => write!(f, "JR r{}", self.rs()),
+            funct => write!(f, "SPECIAL? 0o{funct:o}"),
+        }
+    }
 }
 impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.opcode() {
+            Self::SPECIAL => self.print_special(f),
+            Self::BNE => write!(
+                f,
+                "BNE r{}, r{}, 0x{:x}",
+                self.rs(),
+                self.rt(),
+                self.immediate()
+            ),
             Self::ADDIU => write!(
                 f,
                 "ADDIU r{}, r{}, 0x{:x}",
@@ -74,6 +101,13 @@ impl Display for Instr {
                 self.rt(),
                 self.immediate()
             ),
+            Self::BNEL => write!(
+                f,
+                "BNEL r{}, r{}, 0x{:x}",
+                self.rs(),
+                self.rt(),
+                self.immediate()
+            ),
             Self::LW => write!(
                 f,
                 "LW r{}, 0x{:x}(r{})",
@@ -81,7 +115,14 @@ impl Display for Instr {
                 self.immediate(),
                 self.base()
             ),
-            or => write!(f, "undisplayable opcode 0o{or:o}"),
+            Self::SW => write!(
+                f,
+                "SW r{}, 0x{:x}(r{})",
+                self.rt(),
+                self.immediate(),
+                self.base()
+            ),
+            or => write!(f, "? 0o{or:o}"),
         }
     }
 }

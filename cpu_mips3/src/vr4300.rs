@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use util::{sext_32, Word};
 
 use crate::{
-    core::{Happy, MipsCore},
+    core::{BusCore, Happy, RawCore},
     instruction::Instr,
 };
 
@@ -27,27 +27,25 @@ impl Vr4300 {
         }
     }
 
-    pub fn cycle(&mut self, bus: &mut impl SysAd) -> (u64, bool, Option<Instr>, Option<u64>) {
-        let pc = self.pc;
+    pub fn cycle(&mut self, bus: &mut impl SysAd) {
         let Ok(instr) = self.fetch(bus) else {
-            return (pc, true, None, None);
+            return;
         };
 
         let branch = self.branch.take();
 
         let Ok(()) = self.do_instr(instr, bus) else {
-            return (pc, true, Some(instr), None);
+            return;
         };
 
         if let Some(tgt) = branch {
             self.pc = tgt;
+        } else {
+            self.pc += 4;
         }
-
-        (pc, false, Some(instr), branch)
     }
     fn fetch(&mut self, bus: &mut impl SysAd) -> Happy<Instr> {
         let word = self.read_32(self.pc, bus)?;
-        self.pc += 4;
         Ok(Instr(word))
     }
 
@@ -58,17 +56,14 @@ impl Vr4300 {
         kernel | enable
     }
 
+    pub fn translate_address_debug(&self, addr: u64) -> Option<u32> {
+        self.translate_static_address(addr)
+    }
     fn translate_address(&mut self, addr: u64) -> Happy<u32> {
-        let addr = self.normalize_address(addr);
-
-        if self.is_kernel_mode() {
-            self.translate_kernel_address(addr)
-        } else if self.is_supervisor_mode() {
-            self.translate_supervisor_address(addr)
-        } else if self.is_user_mode() {
-            self.translate_user_address(addr)
+        if let Some(phys) = self.translate_static_address(addr) {
+            Ok(phys)
         } else {
-            unreachable!()
+            todo!()
         }
     }
     fn normalize_address(&self, addr: u64) -> u64 {
@@ -78,52 +73,36 @@ impl Vr4300 {
             sext_32(addr as u32)
         }
     }
-    fn translate_user_address(&mut self, addr: u64) -> Happy<u32> {
-        todo!()
-    }
-    fn translate_supervisor_address(&mut self, addr: u64) -> Happy<u32> {
-        todo!()
-    }
-    fn translate_kernel_address(&mut self, addr: u64) -> Happy<u32> {
-        if XKUSEG.contains(&addr) {
-            todo!()
-        } else if XKSSEG.contains(&addr) {
-            todo!()
-        } else if XKPHYS.contains(&addr) {
-            todo!()
-        } else if XKSEG.contains(&addr) {
-            todo!()
-        } else if CKSEG0.contains(&addr) {
-            Ok((addr - CKSEG0.start()) as u32)
-        } else if CKSEG1.contains(&addr) {
-            Ok((addr - CKSEG1.start()) as u32)
-        } else if CKSSEG.contains(&addr) {
-            todo!()
-        } else if CKSEG3.contains(&addr) {
-            todo!()
+    fn translate_static_address(&self, addr: u64) -> Option<u32> {
+        let addr = self.normalize_address(addr);
+        if self.is_kernel_mode() {
+            Self::translate_static_kernel_address(addr)
         } else {
             todo!()
+        }
+    }
+    fn translate_static_kernel_address(addr: u64) -> Option<u32> {
+        if CKSEG0.contains(&addr) {
+            Some((addr - CKSEG0.start()) as u32)
+        } else if CKSEG1.contains(&addr) {
+            Some((addr - CKSEG1.start()) as u32)
+        } else {
+            None
         }
     }
 
     fn is_64_bit_mode(&self) -> bool {
         self.cop0.status.is_64_bit_mode()
     }
-    fn is_big_endian(&self) -> bool {
+    pub fn is_big_endian(&self) -> bool {
         self.cop0.is_big_endian()
     }
 
     fn is_kernel_mode(&self) -> bool {
         self.cop0.status.is_kernel_mode()
     }
-    fn is_supervisor_mode(&self) -> bool {
-        self.cop0.status.is_supervisor_mode()
-    }
-    fn is_user_mode(&self) -> bool {
-        self.cop0.status.is_user_mode()
-    }
 }
-impl<T: SysAd> MipsCore<T> for Vr4300 {
+impl RawCore for Vr4300 {
     fn get_reg(&self, reg: u8) -> Happy<u64> {
         assert!(reg < 32);
         if reg == 0 {
@@ -146,55 +125,12 @@ impl<T: SysAd> MipsCore<T> for Vr4300 {
         self.pc
     }
 
-    fn read_8(&mut self, addr: u64, bus: &mut T) -> Happy<u8> {
-        todo!()
-    }
-
-    fn read_16(&mut self, addr: u64, bus: &mut T) -> Happy<u16> {
-        todo!()
-    }
-
-    fn read_32(&mut self, addr: u64, bus: &mut T) -> Happy<u32> {
-        if addr % 4 != 0 {
-            todo!()
-        }
-
-        let phys = self.translate_address(addr)?;
-        let word = bus.read(phys, AccessSize::Four);
-
-        if self.is_big_endian() {
-            Ok(word.to_u32_be())
-        } else {
-            Ok(word.to_u32_le())
-        }
-    }
-
-    fn read_64(&mut self, addr: u64, bus: &mut T) -> Happy<u64> {
-        todo!()
-    }
-
-    fn write_8(&mut self, addr: u64, data: u8, bus: &mut T) -> Happy<()> {
-        todo!()
-    }
-
-    fn write_16(&mut self, addr: u64, data: u16, bus: &mut T) -> Happy<()> {
-        todo!()
-    }
-
-    fn write_32(&mut self, addr: u64, data: u32, bus: &mut T) -> Happy<()> {
-        todo!()
-    }
-
-    fn write_64(&mut self, addr: u64, data: u64, bus: &mut T) -> Happy<()> {
-        todo!()
-    }
-
     fn do_mtc0(&mut self, instr: Instr) -> Happy<()> {
         if !self.can_use_cop0() {
             todo!()
         }
 
-        let val = <Self as MipsCore<T>>::get_reg(self, instr.rt())?;
+        let val = self.get_reg(instr.rt())?;
         match instr.rd() {
             12 => self.cop0.status.write(val as u32),
             16 => self.cop0.config.write(val as u32),
@@ -216,16 +152,77 @@ impl<T: SysAd> MipsCore<T> for Vr4300 {
         Ok(())
     }
 }
+impl<T: SysAd> BusCore<T> for Vr4300 {
+    fn read_8(&mut self, addr: u64, bus: &mut T) -> Happy<u8> {
+        todo!()
+    }
 
-pub trait SysAd {
-    fn read(&mut self, address: u32, size: AccessSize) -> Word;
-    fn write(&mut self, address: u32, size: AccessSize, data: Word);
+    fn read_16(&mut self, addr: u64, bus: &mut T) -> Happy<u16> {
+        todo!()
+    }
+
+    fn read_32(&mut self, addr: u64, bus: &mut T) -> Happy<u32> {
+        if addr % 4 != 0 {
+            todo!()
+        }
+
+        let phys = self.translate_address(addr)?;
+        let word = bus.read(phys, AccessSize::Four)[0];
+
+        let be = self.is_big_endian();
+        Ok(word.to_u32(be))
+    }
+
+    fn read_64(&mut self, addr: u64, bus: &mut T) -> Happy<u64> {
+        todo!()
+    }
+
+    fn write_8(&mut self, addr: u64, data: u8, bus: &mut T) -> Happy<()> {
+        todo!()
+    }
+
+    fn write_16(&mut self, addr: u64, data: u16, bus: &mut T) -> Happy<()> {
+        todo!()
+    }
+
+    fn write_32(&mut self, addr: u64, data: u32, bus: &mut T) -> Happy<()> {
+        if addr % 4 != 0 {
+            todo!()
+        };
+
+        let phys = self.translate_address(addr)?;
+        let word = Word::from_u32(data, self.is_big_endian());
+        bus.write(phys, AccessSize::Four, [word, Word::zero()]);
+
+        Ok(())
+    }
+
+    fn write_64(&mut self, addr: u64, data: u64, bus: &mut T) -> Happy<()> {
+        todo!()
+    }
 }
 
+pub trait SysAd {
+    fn read(&mut self, address: u32, size: AccessSize) -> [Word; 2];
+    fn write(&mut self, address: u32, size: AccessSize, data: [Word; 2]);
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AccessSize {
     One,
     Two,
     Four,
+    Eight,
+}
+impl AccessSize {
+    pub fn bytes(self) -> u8 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Four => 4,
+            Self::Eight => 8,
+        }
+    }
 }
 
 const RESET_VECTOR: u64 = 0xFFFF_FFFF_BFC0_0000;
@@ -236,11 +233,11 @@ const XSUSEG: RangeInclusive<u64> = XUSEG;
 const XSSEG: RangeInclusive<u64> = 0x4000000000000000..=0x400000FFFFFFFFFF;
 const CSSEG: RangeInclusive<u64> = 0xFFFFFFFFC0000000..=0xFFFFFFFFDFFFFFFF;
 
-const XKUSEG: RangeInclusive<u64> = XUSEG;
+const XKUSEG: RangeInclusive<u64> = XSUSEG;
 const XKSSEG: RangeInclusive<u64> = XSSEG;
 const XKPHYS: RangeInclusive<u64> = 0x8000000000000000..=0xBFFFFFFFFFFFFFFF;
 const XKSEG: RangeInclusive<u64> = 0xC000000000000000..=0xC00000FF7FFFFFFF;
 const CKSEG0: RangeInclusive<u64> = 0xFFFFFFFF80000000..=0xFFFFFFFF9FFFFFFF;
 const CKSEG1: RangeInclusive<u64> = 0xFFFFFFFFA0000000..=0xFFFFFFFFBFFFFFFF;
-const CKSSEG: RangeInclusive<u64> = 0xFFFFFFFFC0000000..=0xFFFFFFFFDFFFFFFF;
+const CKSSEG: RangeInclusive<u64> = CSSEG;
 const CKSEG3: RangeInclusive<u64> = 0xFFFFFFFFE0000000..=0xFFFFFFFFFFFFFFFF;
