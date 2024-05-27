@@ -1,9 +1,6 @@
-//! The MIPS specification only describes the user-level instruction set.
-//! Kernel mode, memory management and exception handling are left up to the implementation.
-
 use util::{sext_16, sext_32};
 
-use crate::instruction::Instr;
+use crate::instruction::{Instr, Reg};
 
 pub trait RawCore {
     fn do_srl(&mut self, instr: Instr) -> Happy<()> {
@@ -20,7 +17,18 @@ pub trait RawCore {
         self.do_branch(true, false, tgt)?;
         Ok(())
     }
+    fn do_or(&mut self, instr: Instr) -> Happy<()> {
+        let rs = self.get_reg(instr.rs())?;
+        let rt = self.get_reg(instr.rt())?;
+        let result = rs | rt;
+        self.set_reg(instr.rd(), result)?;
+        Ok(())
+    }
 
+    fn do_beq(&mut self, instr: Instr) -> Happy<()> {
+        self.do_c_branch(|a, b| a == b, false, instr)?;
+        Ok(())
+    }
     fn do_bne(&mut self, instr: Instr) -> Happy<()> {
         self.do_c_branch(|a, b| a != b, false, instr)?;
         Ok(())
@@ -54,7 +62,7 @@ pub trait RawCore {
         Ok(())
     }
     fn do_cop0(&mut self, instr: Instr) -> Happy<()> {
-        match instr.rs() {
+        match instr.rs().0 {
             Instr::COPZ_MT => self.do_mtc0(instr)?,
             _ => panic!(),
         }
@@ -83,8 +91,8 @@ pub trait RawCore {
     }
     fn do_branch(&mut self, c: bool, likely: bool, tgt: u64) -> Happy<()>;
 
-    fn get_reg(&self, reg: u8) -> Happy<u64>;
-    fn set_reg(&mut self, reg: u8, val: u64) -> Happy<()>;
+    fn get_reg(&self, reg: Reg) -> Happy<u64>;
+    fn set_reg(&mut self, reg: Reg, val: u64) -> Happy<()>;
 
     fn get_load_store_addr(&self, instr: Instr) -> Happy<u64> {
         let offset = sext_16(instr.immediate());
@@ -93,12 +101,14 @@ pub trait RawCore {
     }
 
     fn program_counter(&self) -> u64;
+    fn is_64_bit_mode(&self) -> bool;
 }
 
 pub trait BusCore<T>: RawCore {
     fn do_instr(&mut self, instr: Instr, bus: &mut T) -> Happy<()> {
         match instr.opcode() {
             Instr::SPECIAL => self.do_special(instr, bus)?,
+            Instr::BEQ => self.do_beq(instr)?,
             Instr::BNE => self.do_bne(instr)?,
             Instr::ADDIU => self.do_addiu(instr)?,
             Instr::ANDI => self.do_andi(instr)?,
@@ -118,6 +128,7 @@ pub trait BusCore<T>: RawCore {
         match instr.funct() {
             Instr::SPECIAL_SRL => self.do_srl(instr)?,
             Instr::SPECIAL_JR => self.do_jr(instr)?,
+            Instr::SPECIAL_OR => self.do_or(instr)?,
             _ => unimplemented!("Execution of {instr} is not implemented"),
         }
 

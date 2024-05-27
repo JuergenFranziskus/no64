@@ -2,18 +2,20 @@ use std::{
     collections::VecDeque,
     io::{self, stdout, Stdout},
     mem::take,
+    ops::Not,
     thread::sleep,
     time::{Duration, Instant},
 };
 
 use cpu_mips3::{
     core::RawCore,
+    instruction::Reg,
     vr4300::{SysAd, Vr4300},
+    word::Word,
 };
 use crossterm::event::{poll, Event, KeyCode, KeyEvent, KeyEventKind};
-use no64::{memory::Memory, rsp::Rsp};
+use no64::{pif_nus::PifNus, rsp::Rsp};
 use terminal::Terminal;
-use util::Word;
 
 mod terminal;
 
@@ -241,24 +243,30 @@ impl App {
                 let instr_str = format!("{instr}");
                 self.term.write(&format!("{word:0>8x} {instr_str:<25}  "));
 
-                let ls_addr = instr
+                let virt = instr
                     .is_load_store()
-                    .then(|| self.cpu.get_load_store_addr(instr));
-                if let Some(Ok(addr)) = ls_addr {
-                    self.term.write(&format!("=> {addr:0>16x} "));
-                    if let Some(phys) = self.cpu.translate_address_debug(addr) {
-                        self.term.write(&format!("= {phys:0>8x}"));
-                    }
+                    .then(|| self.cpu.get_load_store_addr(instr).ok())
+                    .flatten();
+                let phys = virt.map(|v| self.cpu.translate_address_debug(v)).flatten();
+                if let Some(virt) = virt {
+                    self.print_addr(virt, phys);
                 }
             }
+        }
+    }
+    fn print_addr(&mut self, virt: u64, phys: Option<u32>) {
+        self.term.write(&format!("=> {virt:0>16x}"));
+        if let Some(phys) = phys {
+            self.term.write(&format!(" = {phys:0>8x}"));
         }
     }
     fn print_registers(&mut self) {
         for i in 0..32 {
             self.term.move_cursor(100, i);
-            let val = self.cpu.get_reg(i as u8).unwrap();
+            let reg = Reg(i as u8);
+            let val = self.cpu.get_reg(reg).unwrap();
             self.term.write(&format!(
-                "r{i:0>2}: {val:0>16x}  {val:>20}  {:>20}",
+                "{reg}: {val:0>16x}  {val:>20}  {:>20}",
                 val as i64
             ));
         }
@@ -314,48 +322,34 @@ fn adjust_view_top(cpu: &Vr4300, view_top: u64) -> u64 {
 
 pub struct DummyBus {
     rsp: Rsp,
-    memory: Memory,
+    pif_nus: PifNus,
 }
 impl DummyBus {
     fn init() -> Self {
         Self {
             rsp: Rsp::init(),
-            memory: Memory::init(),
+            pif_nus: PifNus::init(),
         }
     }
 
     pub fn read_debug(&self, addr: u32) -> Option<Word> {
-        self.memory.read_debug(addr)
+        self.rsp
+            .read_debug(addr)
+            .or_else(|| self.pif_nus.read_debug(addr))
     }
 }
 impl SysAd for DummyBus {
     fn read(&mut self, address: u32, size: cpu_mips3::vr4300::AccessSize) -> [Word; 2] {
-        if let Some(data) = self.memory.read_for_cpu(address, size) {
-            return data;
-        }
-
-        match address {
-            RSP_REGS_FIRST..=RSP_REGS_LAST => self
-                .rsp
-                .read_for_cpu((address - RSP_REGS_FIRST) as usize, size),
-            _ => [Word::zero(); 2],
-        }
+        self.rsp
+            .read_for_cpu(address, size)
+            .or_else(|| self.pif_nus.read_for_cpu(address, size))
+            .unwrap_or([Word::zero(); 2])
     }
 
     fn write(&mut self, address: u32, size: cpu_mips3::vr4300::AccessSize, data: [Word; 2]) {
-        if self.memory.write_for_cpu(address, size, data) {
-            return;
-        };
-
-        match address {
-            RSP_REGS_FIRST..=RSP_REGS_LAST => {
-                self.rsp
-                    .write_for_cpu((address - RSP_REGS_FIRST) as usize, size, data)
-            }
-            _ => (),
-        }
+        self.rsp
+            .write_for_cpu(address, size, data)
+            .not()
+            .then(|| self.pif_nus.write_for_cpu(address, size, data));
     }
 }
-
-const RSP_REGS_FIRST: u32 = 0x04040000;
-const RSP_REGS_LAST: u32 = 0x040BFFFF;

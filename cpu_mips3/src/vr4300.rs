@@ -1,10 +1,11 @@
 use std::ops::RangeInclusive;
 
-use util::{sext_32, Word};
+use util::sext_32;
 
 use crate::{
     core::{BusCore, Happy, RawCore},
-    instruction::Instr,
+    instruction::{Instr, Reg},
+    word::Word,
 };
 
 use self::cop0::Cop0;
@@ -91,9 +92,6 @@ impl Vr4300 {
         }
     }
 
-    fn is_64_bit_mode(&self) -> bool {
-        self.cop0.status.is_64_bit_mode()
-    }
     pub fn is_big_endian(&self) -> bool {
         self.cop0.is_big_endian()
     }
@@ -103,7 +101,8 @@ impl Vr4300 {
     }
 }
 impl RawCore for Vr4300 {
-    fn get_reg(&self, reg: u8) -> Happy<u64> {
+    fn get_reg(&self, reg: Reg) -> Happy<u64> {
+        let reg = reg.0;
         assert!(reg < 32);
         if reg == 0 {
             Ok(0)
@@ -111,8 +110,8 @@ impl RawCore for Vr4300 {
             Ok(self.gp[reg as usize - 1])
         }
     }
-
-    fn set_reg(&mut self, reg: u8, val: u64) -> Happy<()> {
+    fn set_reg(&mut self, reg: Reg, val: u64) -> Happy<()> {
+        let reg = reg.0;
         assert!(reg < 32);
         if reg != 0 {
             self.gp[reg as usize - 1] = val;
@@ -124,6 +123,9 @@ impl RawCore for Vr4300 {
     fn program_counter(&self) -> u64 {
         self.pc
     }
+    fn is_64_bit_mode(&self) -> bool {
+        self.cop0.status.is_64_bit_mode()
+    }
 
     fn do_mtc0(&mut self, instr: Instr) -> Happy<()> {
         if !self.can_use_cop0() {
@@ -131,7 +133,7 @@ impl RawCore for Vr4300 {
         }
 
         let val = self.get_reg(instr.rt())?;
-        match instr.rd() {
+        match instr.rd().0 {
             12 => self.cop0.status.write(val as u32),
             16 => self.cop0.config.write(val as u32),
             32.. => unreachable!(),
@@ -222,6 +224,56 @@ impl AccessSize {
             Self::Four => 4,
             Self::Eight => 8,
         }
+    }
+}
+
+pub fn read_word(words: &[Word], byte_offset: u32, size: AccessSize) -> [Word; 2] {
+    let word_offset = byte_offset as usize / 4;
+    let lo_word = words[word_offset];
+    let hi_word = if size == AccessSize::Eight {
+        words[word_offset + 1]
+    } else {
+        Word::zero()
+    };
+
+    [lo_word, hi_word]
+}
+pub fn read_word_from_bytes(bytes: &[u8], byte_offset: u32, size: AccessSize) -> [Word; 2] {
+    let base = &bytes[byte_offset as usize..];
+    let mut bytes = [0; 8];
+    for i in 0..size.bytes() {
+        let i = i as usize;
+        bytes[i] = base[i];
+    }
+
+    let one = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    let two = [bytes[4], bytes[5], bytes[6], bytes[7]];
+
+    let one = Word(one);
+    let two = Word(two);
+
+    [one, two]
+}
+pub fn write_word(words: &mut [Word], byte_offset: u32, size: AccessSize, data: [Word; 2]) {
+    let word_offset = byte_offset as usize / 4;
+
+    if size == AccessSize::Eight {
+        words[word_offset + 0] = data[0];
+        words[word_offset + 1] = data[1];
+    } else {
+        let suboffset = (byte_offset % 4) as u8;
+        words[word_offset].overwrite(data[0], suboffset, size.bytes());
+    }
+}
+pub fn write_word_to_bytes(bytes: &mut [u8], byte_offset: u32, size: AccessSize, data: [Word; 2]) {
+    let byte_offset = byte_offset as usize;
+    let suboffset = byte_offset % 4;
+    let size = size.bytes() as usize;
+    let base = &mut bytes[byte_offset..];
+    for i in suboffset..(suboffset + size) {
+        let word = i / 4;
+        let word = data[word];
+        base[i] = word.0[i];
     }
 }
 
