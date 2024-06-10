@@ -1,20 +1,19 @@
 use std::{
     collections::VecDeque,
-    io::{self, stdout, Stdout},
-    mem::take,
-    ops::Not,
+    io::{self, stdout, Stdout, Write},
+    mem::{replace, take},
     thread::sleep,
     time::{Duration, Instant},
 };
 
 use cpu_mips3::{
-    core::RawCore,
-    instruction::Reg,
-    vr4300::{SysAd, Vr4300},
+    core::{MipsResult, RawCore},
+    instruction::{print_instr, Instr, Reg},
+    vr4300::{SysAd, Vr4300, WriteSize},
     word::Word,
 };
 use crossterm::event::{poll, Event, KeyCode, KeyEvent, KeyEventKind};
-use no64::{pif_nus::PifNus, rsp::Rsp};
+use no64::{console::Console, pif_nus::PifNus, rsp::Rsp};
 use terminal::Terminal;
 
 mod terminal;
@@ -26,33 +25,26 @@ fn main() -> anyhow::Result<()> {
 }
 
 struct App {
+    console: Console,
     running: bool,
     term: Terminal<Stdout>,
-    cpu: Vr4300,
-    mem: DummyBus,
-    view_top: u64,
     line: String,
     errors: VecDeque<String>,
-    delay: Duration,
     state: State,
+    delay: Duration,
 }
 impl App {
     fn new() -> anyhow::Result<Self> {
         let term = Terminal::init(stdout())?;
-        let cpu = Vr4300::init();
-        let mem = DummyBus::init();
-        let view_top = 0;
 
         Ok(Self {
+            console: Console::init(),
             running: true,
             term,
-            cpu,
-            mem,
-            view_top,
             line: String::new(),
             errors: VecDeque::new(),
-            delay: Duration::ZERO,
             state: State::Idle,
+            delay: Duration::ZERO,
         })
     }
 
@@ -106,174 +98,139 @@ impl App {
         let cmd = words[0];
         let args = &words[1..];
         match cmd {
-            "run_for" | "rf" => self.do_run_for_command(args)?,
-            "run_until" | "ru" => self.do_run_until_command(args)?,
             "delay" | "d" => self.do_delay_command(args)?,
+            "run_for" | "rf" => self.do_run_for_command(args)?,
             or => self.errors.push_back(format!("Unrecognized command: {or}")),
-        }
-
-        Ok(())
-    }
-    fn do_run_for_command(&mut self, args: &[&str]) -> anyhow::Result<()> {
-        if args.len() != 1 {
-            self.errors
-                .push_back(format!("Wrong number of arguments, requires 1"));
-            return Ok(());
-        }
-        let cycles_src = args[0];
-        let Ok(cycles) = cycles_src.parse() else {
-            self.errors.push_back(format!("Invalid argument"));
-            return Ok(());
-        };
-
-        if self.state == State::Idle {
-            self.state = State::Run(RunTarget::For(cycles), Instant::now());
-        } else {
-            self.errors
-                .push_back(format!("Already executing another command"));
-        }
-
-        Ok(())
-    }
-    fn do_run_until_command(&mut self, args: &[&str]) -> anyhow::Result<()> {
-        if args.len() != 1 {
-            self.errors
-                .push_back(format!("Wrong number of arguments, requires 1"));
-            return Ok(());
-        }
-
-        let addr_src = args[0];
-        let Ok(addr) = u64::from_str_radix(addr_src, 16) else {
-            self.errors.push_back(format!("Invalid argument"));
-            return Ok(());
-        };
-
-        if self.state == State::Idle {
-            self.state = State::Run(RunTarget::Until(addr), Instant::now());
-        } else {
-            self.errors
-                .push_back(format!("Already executing another command"));
         }
 
         Ok(())
     }
     fn do_delay_command(&mut self, args: &[&str]) -> anyhow::Result<()> {
         if args.len() != 1 {
-            self.errors
-                .push_back(format!("Wrong number of arguments, requires 1"));
+            self.errors.push_back("Wrong amount of arguments".into());
             return Ok(());
         }
-        let millis_src = args[0];
-        let Ok(millis) = millis_src.parse() else {
-            self.errors.push_back(format!("Invalid argument"));
+
+        let Ok(millis) = args[0].parse() else {
+            self.errors.push_back("Could not parse argument".into());
             return Ok(());
         };
 
         self.delay = Duration::from_millis(millis);
         Ok(())
     }
+    fn do_run_for_command(&mut self, args: &[&str]) -> anyhow::Result<()> {
+        if args.len() != 1 {
+            self.errors.push_back("Wrong amount of arguments".into());
+            return Ok(());
+        }
+
+        let Ok(cycles) = args[0].parse() else {
+            self.errors.push_back("Could not parse argument".into());
+            return Ok(());
+        };
+
+        if self.state != State::Idle {
+            self.errors.push_back("Already executing different command".into());
+            return Ok(());
+        }
+
+        self.state = State::RunFor(cycles, Instant::now());
+        Ok(())
+    }
 
     fn update(&mut self) -> anyhow::Result<()> {
-        match self.state {
+        let state = replace(&mut self.state, State::Idle);
+        match state {
             State::Idle => (),
-            State::Run(_, _) => self.update_command_run()?,
+            State::RunFor(cycles, next) => self.update_run_for(cycles, next)?,
+            State::RunUntil(addr, next) => self.update_run_until(addr, next)?,
         }
 
         Ok(())
     }
-    fn update_command_run(&mut self) -> anyhow::Result<()> {
-        let State::Run(target, next) = &mut self.state else {
-            unreachable!()
-        };
-
-        while Instant::now() >= *next {
-            match target {
-                RunTarget::For(cycles) => {
-                    if *cycles == 0 {
-                        self.state = State::Idle;
-                        break;
-                    } else {
-                        *next += self.delay;
-                    }
-                    self.cpu.cycle(&mut self.mem);
-                    *cycles -= 1;
-                }
-                RunTarget::Until(addr) => {
-                    if *addr == self.cpu.program_counter() {
-                        self.state = State::Idle;
-                        break;
-                    } else {
-                        *next += self.delay;
-                    }
-                    self.cpu.cycle(&mut self.mem);
-                }
+    fn update_run_for(&mut self, mut cycles: usize, mut next: Instant) -> anyhow::Result<()> {
+        while cycles != 0 {
+            if Instant::now() < next {
+                self.state = State::RunFor(cycles, next);
+                break;
             }
+            self.step_emulator()?;
+            next = next + self.delay;
+            cycles -= 1;
+        }
+        if cycles != 0 {
+            self.state = State::RunFor(cycles, next);
+        }
+
+
+        Ok(())
+    }
+    fn update_run_until(&mut self, addr: u64, next: Instant) -> anyhow::Result<()> {
+        todo!()
+    }
+
+    fn step_emulator(&mut self) -> anyhow::Result<()> {
+        let (cpu, mut bus) = self.console.cpu_and_bus();
+        let res = cpu.step_forward(&mut bus);
+
+        if let Err(err) = res {
+            self.render()?;
+            println!("Could not step emulator forward");
+            println!("{}", err.at());
+
+            return Err(anyhow::Error::msg("All fucked up"));
         }
 
         Ok(())
     }
 
     fn render(&mut self) -> io::Result<()> {
-        self.print_disassembly();
-        self.print_registers();
+        self.print_disassembly()?;
+        self.print_registers()?;
         self.print_line();
         self.print_errors();
         self.term.print()?;
         Ok(())
     }
-    fn print_disassembly(&mut self) {
-        self.view_top = adjust_view_top(&self.cpu, self.view_top);
+    fn print_disassembly(&mut self) -> io::Result<()> {
+        let pc = self.console.cpu.program_counter();
+        let first = pc - 15 * 4;
+        let last = pc + 14 * 4;
+        let mut previous = None;
 
-        for i in 0..50 {
+        for (i, addr) in (first..last).step_by(4).enumerate() {
+            let prev = previous.take();
             self.term.move_cursor(0, i);
-            let addr = self.view_top + (i as u64) * 4;
-            self.term.write(&format!("{addr:0>16x}: "));
-            let pc = self.cpu.program_counter();
-            if pc == addr {
-                self.term.write("->");
-            } else {
-                self.term.write("  ");
-            }
+            write!(self.term, "{addr:0>16x}")?;
+            let Some(phys) = self.console.cpu.translate_address_debug(addr) else { continue };
+            let c = if phys.cached { "C" } else { " " };
+            let arrow = if pc == addr { "->" } else { "  " };
+            write!(self.term, " {c} {:0>8x} {arrow}", phys.addr)?;
+            let Some(word) = self.console.read_debug(phys.addr) else { continue };
+            let val = word.to_u32(self.console.cpu.is_big_endian());
+            write!(self.term, "{val:0>8x} ")?;
+            let instr = Instr(val);
+            previous = Some(instr);
 
-            let phys = self.cpu.translate_address_debug(addr);
-            let word = phys.map(|p| self.mem.read_debug(p)).flatten();
-            if let Some(word) = word {
-                let word = word.to_u32(self.cpu.is_big_endian());
-                let instr = cpu_mips3::instruction::Instr(word);
-                let instr_str = format!("{instr}");
-                self.term.write(&format!("{word:0>8x} {instr_str:<25}  "));
-
-                let virt = instr
-                    .is_load_store()
-                    .then(|| self.cpu.get_load_store_addr(instr).ok())
-                    .flatten();
-                let phys = virt.map(|v| self.cpu.translate_address_debug(v)).flatten();
-                if let Some(virt) = virt {
-                    self.print_addr(virt, phys);
-                }
-            }
+            print_instr(&mut self.term, instr)?;
         }
+        Ok(())
     }
-    fn print_addr(&mut self, virt: u64, phys: Option<u32>) {
-        self.term.write(&format!("=> {virt:0>16x}"));
-        if let Some(phys) = phys {
-            self.term.write(&format!(" = {phys:0>8x}"));
-        }
-    }
-    fn print_registers(&mut self) {
+    fn print_registers(&mut self) -> io::Result<()> {
         for i in 0..32 {
-            self.term.move_cursor(100, i);
-            let reg = Reg(i as u8);
-            let val = self.cpu.get_reg(reg).unwrap();
-            self.term.write(&format!(
-                "{reg}: {val:0>16x}  {val:>20}  {:>20}",
-                val as i64
-            ));
+            let r = Reg(i);
+            self.term.move_cursor(100, i as usize);
+            let val = self.console.cpu.get_reg_i64(r).unwrap_or(0);
+            cpu_mips3::instruction::print_gp_reg(&mut self.term, r)?;
+            write!(self.term, " = 0x{val:x}")?;
         }
+
+        Ok(())
     }
     fn print_line(&mut self) {
         self.term.move_cursor(0, 51);
-        self.term.write(&self.line);
+        self.term.write_text(&self.line);
     }
     fn print_errors(&mut self) {
         while self.errors.len() > 10 {
@@ -282,7 +239,7 @@ impl App {
 
         for (i, err) in self.errors.iter().enumerate() {
             self.term.move_cursor(100, i + 40);
-            self.term.write(&err);
+            self.term.write_text(&err);
         }
     }
 
@@ -297,59 +254,6 @@ impl App {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum State {
     Idle,
-    Run(RunTarget, Instant),
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum RunTarget {
-    For(u64),
-    Until(u64),
-}
-
-fn adjust_view_top(cpu: &Vr4300, view_top: u64) -> u64 {
-    let pc = cpu.program_counter();
-
-    const HI_BOUND: u64 = 40 * 4;
-
-    if pc > view_top + HI_BOUND {
-        pc - HI_BOUND
-    } else if pc < view_top {
-        pc
-    } else {
-        view_top
-    }
-}
-
-pub struct DummyBus {
-    rsp: Rsp,
-    pif_nus: PifNus,
-}
-impl DummyBus {
-    fn init() -> Self {
-        Self {
-            rsp: Rsp::init(),
-            pif_nus: PifNus::init(),
-        }
-    }
-
-    pub fn read_debug(&self, addr: u32) -> Option<Word> {
-        self.rsp
-            .read_debug(addr)
-            .or_else(|| self.pif_nus.read_debug(addr))
-    }
-}
-impl SysAd for DummyBus {
-    fn read(&mut self, address: u32, size: cpu_mips3::vr4300::AccessSize) -> [Word; 2] {
-        self.rsp
-            .read_for_cpu(address, size)
-            .or_else(|| self.pif_nus.read_for_cpu(address, size))
-            .unwrap_or([Word::zero(); 2])
-    }
-
-    fn write(&mut self, address: u32, size: cpu_mips3::vr4300::AccessSize, data: [Word; 2]) {
-        self.rsp
-            .write_for_cpu(address, size, data)
-            .not()
-            .then(|| self.pif_nus.write_for_cpu(address, size, data));
-    }
+    RunFor(usize, Instant),
+    RunUntil(u64, Instant),
 }

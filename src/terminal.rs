@@ -74,9 +74,20 @@ impl<O: Write> Terminal<O> {
         self.put(self.cursor[0], self.cursor[1], c);
         self.cursor[0] += 1;
     }
-    pub fn write(&mut self, text: &str) {
+    pub fn write_text(&mut self, text: &str) {
         for c in text.chars() {
             self.put_at_cursor(c);
         }
+    }
+}
+impl<O: Write> Write for Terminal<O> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let string = String::from_utf8_lossy(buf);
+        self.write_text(&string);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.print()
     }
 }

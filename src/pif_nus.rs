@@ -1,17 +1,12 @@
-use cpu_mips3::{
-    vr4300::{read_word, read_word_from_bytes, write_word_to_bytes, AccessSize},
-    word::Word,
-};
+use cpu_mips3::{core::MipsErr, word::Word};
 
 pub struct PifNus {
     rom: Vec<Word>,
-    ram: Vec<u8>,
 }
 impl PifNus {
     pub fn init() -> Self {
         Self {
             rom: Self::preprocess_rom(),
-            ram: vec![0; PIF_RAM_BYTES],
         }
     }
     fn preprocess_rom() -> Vec<Word> {
@@ -23,42 +18,12 @@ impl PifNus {
         words
     }
 
-    pub fn read_debug(&self, addr: u32) -> Option<Word> {
+    pub fn read_word_for_cpu(&self, addr: u32) -> Result<Option<Word>, MipsErr> {
         match addr {
-            PIF_ROM_FIRST..=PIF_ROM_LAST => {
-                Some(read_word(&self.rom, addr - PIF_ROM_FIRST, AccessSize::Four)[0])
-            }
-            PIF_RAM_FIRST..=PIF_RAM_LAST => {
-                Some(read_word_from_bytes(&self.ram, addr - PIF_RAM_FIRST, AccessSize::Four)[0])
-            }
-            _ => None,
+            PIF_ROM_FIRST..=PIF_ROM_LAST => Ok(Some(self.rom[(addr - PIF_ROM_FIRST) as usize / 4])),
+            PIF_RAM_FIRST..=PIF_RAM_LAST => Err(MipsErr::new("reading from PIFNUS ram is not implemented")),
+            _ => Ok(None)
         }
-    }
-    pub fn read_for_cpu(&self, addr: u32, size: AccessSize) -> Option<[Word; 2]> {
-        match addr {
-            PIF_ROM_FIRST..=PIF_ROM_LAST => Some(read_word(&self.rom, addr - PIF_ROM_FIRST, size)),
-            PIF_RAM_FIRST..=PIF_RAM_LAST => Some(read_word_from_bytes(
-                &self.ram,
-                addr - PIF_RAM_FIRST,
-                AccessSize::Four,
-            )),
-            _ => None,
-        }
-    }
-    pub fn write_for_cpu(&mut self, addr: u32, size: AccessSize, data: [Word; 2]) -> bool {
-        if addr < PIF_RAM_FIRST || addr > PIF_RAM_LAST {
-            return false;
-        };
-        let offset = addr - PIF_RAM_FIRST;
-        write_word_to_bytes(&mut self.ram, offset, size, data);
-
-        if offset == 0x3F {
-            todo!(
-                "Writing to last byte of PIF ram initiates unimplemented PIF_NUS command response"
-            );
-        }
-
-        true
     }
 }
 

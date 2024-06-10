@@ -1,5 +1,6 @@
-use util::{bitmask_32, get_field_32, get_flag_32, set_flag_32, sign_bit_32};
+use bitfield_struct::bitfield;
 
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Cop0 {
     pub index: Index,
     pub random: Random,
@@ -8,288 +9,277 @@ pub struct Cop0 {
     pub context: Context,
     pub page_mask: PageMask,
     pub wired: Wired,
-    pub bad_vaddr: u64,
-    pub count: u32,
-    pub compare: u32,
+    pub bad_v_addr: BadVAddr,
+    pub count: Count,
+    pub entry_hi: EntryHi,
+    pub compare: Compare,
     pub status: Status,
     pub cause: Cause,
-    pub epc: u64,
+    pub epc: EPC,
     pub config: Config,
-    pub ll_addr: u32,
+    pub ll_addr: LLAddr,
     pub watch_lo: WatchLo,
     pub watch_hi: WatchHi,
-    pub xcontext: XContext,
-    pub perr: PErr,
+    pub x_context: XContext,
+    pub p_err: PErr,
     pub tag_lo: TagLo,
-    pub err_epc: u64,
+    pub error_epc: ErrorEPC,
 }
 impl Cop0 {
     pub fn init() -> Self {
         Self {
-            index: Index::init(),
-            random: Random::init(),
-            entry_lo0: EntryLo::init(),
-            entry_lo1: EntryLo::init(),
-            context: Context::init(),
-            page_mask: PageMask::init(),
-            wired: Wired::init(),
-            bad_vaddr: 0,
-            count: 0,
-            compare: 0,
-            status: Status::init(),
-            cause: Cause::init(),
-            epc: 0,
-            config: Config::init(),
-            ll_addr: 0,
-            watch_lo: WatchLo::init(),
-            watch_hi: WatchHi::init(),
-            xcontext: XContext::init(),
-            perr: PErr::init(),
-            tag_lo: TagLo::init(),
-            err_epc: 0,
+            ..Default::default()
         }
     }
 
+    pub fn mode(&self) -> Mode {
+        self.status.mode()
+    }
+    pub fn is_64_bit_mode(&self) -> bool {
+        self.status.is_64_bit_mode()
+    }
     pub fn is_big_endian(&self) -> bool {
-        let flip = self.status.re() && self.status.is_user_mode();
-        self.config.be() ^ flip
+        self.config.be()
+    }
+    pub fn is_ksg0_cached(&self) -> bool {
+        self.config.is_kseg0_cached()
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Index(u8);
-impl Index {
-    pub fn init() -> Self {
-        Self(0)
-    }
-    pub fn write(&mut self, word: u32) {
-        let index = word as u8 & 0x3F;
-        let p = if sign_bit_32(word) { 0x80 } else { 0 };
-        self.0 = index | p
-    }
-    pub fn read(self) -> u32 {
-        let index = self.index() as u32;
-        let p = if self.p() { 0x8000_0000 } else { 0 };
-        index | p
-    }
-    pub fn index(self) -> u8 {
-        self.0 & 0x3F
-    }
-    pub fn p(self) -> bool {
-        self.0 & 0x80 != 0
-    }
+#[bitfield(u32)]
+pub struct Index {
+    #[bits(5)]
+    index: u8,
+    bit: bool,
+    #[bits(25)]
+    _rfu: usize,
+    p: bool,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Random(u8);
-impl Random {
-    pub fn init() -> Self {
-        Self(31)
-    }
+#[bitfield(u32)]
+pub struct Random {
+    #[bits(5, default = 31)]
+    random: u8,
+    bit: bool,
+    #[bits(26)]
+    _rfu: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct EntryLo(u64);
-impl EntryLo {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct EntryLo {
+    g: bool,
+    v: bool,
+    d: bool,
+    #[bits(3)]
+    c: u8,
+    #[bits(20)]
+    pfn: u32,
+    #[bits(6)]
+    _rfu: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Context(u64);
-impl Context {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u64)]
+pub struct Context {
+    #[bits(4)]
+    _rfu: usize,
+    #[bits(19)]
+    bad_vpn2: u32,
+    #[bits(41)]
+    pte_base: u64,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct PageMask(u32);
-impl PageMask {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct PageMask {
+    #[bits(13)]
+    _rfu: usize,
+    #[bits(12)]
+    mask: u16,
+    #[bits(7)]
+    _rfu: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Wired(u8);
-impl Wired {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct Wired {
+    #[bits(6)]
+    wired: u8,
+    #[bits(26)]
+    _rfu: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Status(u32);
+#[derive(Copy, Clone, Debug, Default)]
+pub struct BadVAddr(u64);
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Count(u32);
+
+#[bitfield(u64)]
+pub struct EntryHi {
+    asid: u8,
+    #[bits(5)]
+    _rfu: usize,
+    #[bits(27)]
+    vpn2: u32,
+    #[bits(22)]
+    _fill: usize,
+    #[bits(2)]
+    r: u8,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Compare(u32);
+
+#[bitfield(u32)]
+pub struct Status {
+    ie: bool,
+    exl: bool,
+    #[bits(default = true)]
+    erl: bool,
+    #[bits(2)]
+    ksu: u8,
+    ux: bool,
+    sx: bool,
+    kx: bool,
+    im: u8,
+    de: bool,
+    ce: bool,
+    ch: bool,
+    _rfu: bool,
+    sr: bool,
+    ts: bool,
+    #[bits(default = true)]
+    bev: bool,
+    _rfu: bool,
+    its: bool,
+    re: bool,
+    fr: bool,
+    rp: bool,
+    cu0: bool,
+    cu1: bool,
+    cu2: bool,
+    cu3: bool,
+}
 impl Status {
-    pub fn init() -> Self {
-        let mut data = 0;
-        set_flag_32(&mut data, Self::ERL, true);
-        set_flag_32(&mut data, Self::DS_BEV, true);
-        Self(data)
-    }
-
-    pub fn write(&mut self, val: u32) {
-        self.0 = val & !Self::RFU_MASK;
-    }
-    pub fn read(self) -> u32 {
-        self.0 & !Self::RFU_MASK
-    }
-
-    pub fn cop0_enabled(self) -> bool {
-        get_flag_32(self.0, Self::CU)
+    pub fn mode(self) -> Mode {
+        let ksu = self.ksu();
+        let exl = self.exl();
+        let erl = self.erl();
+        if exl || erl || ksu == 0 {
+            Mode::Kernel
+        } else if ksu == 1 {
+            Mode::Supervisor
+        } else {
+            Mode::User
+        }
     }
 
     pub fn is_64_bit_mode(self) -> bool {
-        if self.is_user_mode() {
-            self.ux()
-        } else if self.is_supervisor_mode() {
-            self.sx()
-        } else if self.is_kernel_mode() {
-            self.kx()
-        } else {
-            unreachable!()
+        match self.mode() {
+            Mode::Kernel => self.kx(),
+            Mode::Supervisor => self.sx(),
+            Mode::User => self.ux(),
         }
     }
-    pub fn is_user_mode(self) -> bool {
-        !self.exl() && !self.erl() && self.ksu() == 2
-    }
-    pub fn is_supervisor_mode(self) -> bool {
-        !self.exl() && !self.erl() && self.ksu() == 1
-    }
-    pub fn is_kernel_mode(self) -> bool {
-        self.exl() || self.erl() || self.ksu() == 0
-    }
-
-    fn exl(self) -> bool {
-        get_flag_32(self.0, Self::EXL)
-    }
-    fn erl(self) -> bool {
-        get_flag_32(self.0, Self::ERL)
-    }
-    fn ksu(self) -> u8 {
-        get_field_32(self.0, Self::KSU, Self::KSU_WIDTH) as u8
-    }
-    fn ux(self) -> bool {
-        get_flag_32(self.0, Self::UX)
-    }
-    fn sx(self) -> bool {
-        get_flag_32(self.0, Self::SX)
-    }
-    fn kx(self) -> bool {
-        get_flag_32(self.0, Self::KX)
-    }
-    fn re(self) -> bool {
-        get_flag_32(self.0, Self::RE)
-    }
-
-    const IE: u32 = 0;
-    const EXL: u32 = 1;
-    const ERL: u32 = 2;
-    const KSU: u32 = 3;
-    const UX: u32 = 5;
-    const SX: u32 = 6;
-    const KX: u32 = 7;
-    const IM: u32 = 8;
-    const DS_DE: u32 = 16;
-    const DS_CE: u32 = 17;
-    const DS_CH: u32 = 18;
-    const DS_SR: u32 = 20;
-    const DS_TS: u32 = 21;
-    const DS_BEV: u32 = 22;
-    const DS_ITS: u32 = 24;
-    const RE: u32 = 25;
-    const FR: u32 = 26;
-    const RP: u32 = 27;
-    const CU: u32 = 28;
-
-    const KSU_WIDTH: u32 = 2;
-    const IM_WIDTH: u32 = 8;
-    const CU_WIDTH: u32 = 4;
-
-    const RFU_MASK: u32 = 1 << 23;
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Cause(u32);
-impl Cause {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct Cause {
+    #[bits(2)]
+    _rfu: usize,
+    #[bits(5)]
+    exec_code: u8,
+    _rfu: bool,
+    ip: u8,
+    #[bits(12)]
+    _rfu: u16,
+    #[bits(2)]
+    ce: u8,
+    _rfu: bool,
+    bd: bool,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Config(u32);
+#[derive(Copy, Clone, Debug, Default)]
+pub struct EPC(u64);
+
+#[bitfield(u32)]
+pub struct Config {
+    #[bits(3)]
+    k0: u8,
+    cu: bool,
+    #[bits(11, default = 0b1100_1000_110)]
+    _constant0: u16,
+    #[bits(default = true)]
+    be: bool,
+    #[bits(8, default = 0b0000_0110)]
+    _constant1: u8,
+    #[bits(4)]
+    ep: u8,
+    #[bits(3)]
+    ec: u8,
+    _rfu: bool,
+}
 impl Config {
-    pub fn init() -> Self {
-        let mut data = 0;
-        set_flag_32(&mut data, Self::BE, true);
-
-        Self(data)
-    }
-
-    pub fn write(&mut self, data: u32) {
-        self.0 = data & !Self::CONST_MASK;
-    }
-    pub fn read(self) -> u32 {
-        self.0 & !Self::CONST_MASK | Self::CONST_VAL
-    }
-
-    pub fn be(self) -> bool {
-        get_flag_32(self.0, Self::BE)
-    }
-
-    const K0: u32 = 0;
-    const CU: u32 = 1;
-    const BE: u32 = 15;
-    const EP: u32 = 24;
-    const EC: u32 = 28;
-
-    const K0_WIDTH: u32 = 3;
-    const EP_WIDTH: u32 = 4;
-    const EC_WIDTH: u32 = 3;
-
-    const CONST_MASK: u32 = bitmask_32(4, 11) | bitmask_32(16, 8) | bitmask_32(30, 1);
-    const CONST_VAL: u32 = 0b110_0_11001000110_0_000;
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct WatchLo(u32);
-impl WatchLo {
-    pub fn init() -> Self {
-        Self(0)
+    pub fn is_kseg0_cached(self) -> bool {
+        self.k0() != 0b010
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct WatchHi(u8);
-impl WatchHi {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[derive(Copy, Clone, Debug, Default)]
+pub struct LLAddr(u32);
+
+#[bitfield(u32)]
+pub struct WatchLo {
+    w: bool,
+    r: bool,
+    _rfu: bool,
+    #[bits(29)]
+    paddr0: u32,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct XContext(u64);
-impl XContext {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct WatchHi {
+    #[bits(4)]
+    paddr1: u8,
+    #[bits(28)]
+    _rfu: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct PErr(u8);
-impl PErr {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u64)]
+pub struct XContext {
+    #[bits(4)]
+    _rfu: usize,
+    #[bits(27)]
+    bad_vpn2: u32,
+    #[bits(2)]
+    r: u8,
+    #[bits(31)]
+    pte_base: u32,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct TagLo(u32);
-impl TagLo {
-    pub fn init() -> Self {
-        Self(0)
-    }
+#[bitfield(u32)]
+pub struct PErr {
+    diagnostic: u8,
+    #[bits(24)]
+    _rfu: usize,
+}
+
+#[bitfield(u32)]
+pub struct TagLo {
+    #[bits(6)]
+    _rfu: usize,
+    #[bits(2)]
+    pstate: u8,
+    #[bits(20)]
+    ptag_lo: u32,
+    #[bits(4)]
+    _rfu: usize,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ErrorEPC(u64);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Kernel,
+    Supervisor,
+    User,
 }

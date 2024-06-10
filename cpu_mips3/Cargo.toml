@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bitfield-struct = "0.6.2"
 util = { path = "../util" }
